@@ -5,7 +5,7 @@
 #include <tlhelp32.h>
 
 DWORD get_pid(LPCTSTR name) {
-	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	if (snapshot == INVALID_HANDLE_VALUE) {
 		return 0;
 	}
@@ -27,10 +27,10 @@ DWORD get_pid(LPCTSTR name) {
 #define _ERROR(n) \
 	switch (n) { \
 		case 1: \
-			puts("error: few arguments!"); \
+			puts("error: too few arguments!"); \
 			return n; \
 		case 2: \
-			puts("error: process not found!"); \
+			puts("error: not found process!"); \
 			return n; \
 		case 3: \
 			puts("error: can't write process memory!"); \
@@ -39,18 +39,23 @@ DWORD get_pid(LPCTSTR name) {
 			puts("error: can't create process thread!"); \
 			return n; \
 		case 5: \
-			puts("error: dll of process not found!"); \
+			puts("error: not found dll on process!"); \
 			return n; \
 	}
 
 int main(int argc, char const *argv[]) {
 	int ac = 0;
 	char const **av = malloc(argc);
+
 	bool free_mode = false;
+	bool not_found_wait = false;
+
 	for (size_t i = 1; i < argc; i++) {
 		if (argv[i][0] == '-') {
 			if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--free")) {
 				free_mode = true;
+			} else if (!strcmp(argv[i], "-w") || !strcmp(argv[i], "--not-found-wait")) {
+				not_found_wait = true;
 			}
 		} else {
 			av[ac++] = argv[i];
@@ -62,12 +67,51 @@ int main(int argc, char const *argv[]) {
 		_ERROR(1);
 	}
 
-	DWORD pid = get_pid(av[0]);
-	if (!pid) {
-		_ERROR(2);
+	HANDLE h = NULL;
+	HANDLE th = NULL;
+
+	if (av[0][0] == '*') {
+		STARTUPINFOA si;
+		memset(&si, 0, sizeof(si));
+		si.cb = sizeof(si);
+
+		PROCESS_INFORMATION pi;
+		memset(&pi, 0, sizeof(pi));
+
+		if (CreateProcessA(
+			NULL,
+			(char *)&av[0][1],
+			NULL,
+			NULL,
+			true,
+			CREATE_SUSPENDED,
+			NULL,
+			NULL,
+			&si,
+			&pi
+		)) {
+			h = pi.hProcess;
+			th = pi.hThread;
+		} else {
+			CloseHandle(pi.hProcess);
+			CloseHandle(pi.hThread);
+		}
+	} else {
+		DWORD pid = get_pid(av[0]);
+		if (!pid) {
+			if (not_found_wait) {
+				do {
+					Sleep(1000);
+					pid = get_pid(av[0]);
+				} while (!pid);
+				Sleep(5000);
+			} else {
+				_ERROR(2);
+			}
+		}
+		h = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_WRITE, FALSE, pid);
 	}
 
-	HANDLE h = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_WRITE, FALSE, pid);
 	if (!h) {
 		_ERROR(2);
 	}
@@ -120,6 +164,17 @@ int main(int argc, char const *argv[]) {
 	}
 
 	WaitForSingleObject(pthrd, INFINITE);
+	DWORD pthrd_r;
+	GetExitCodeThread(pthrd, &pthrd_r);
 	CloseHandle(pthrd);
+
+	printf("result: %d\n", pthrd_r);
+
+	if (th) {
+		ResumeThread(th);
+		CloseHandle(th);
+	}
+
+	CloseHandle(h);
 	return 0;
 }
